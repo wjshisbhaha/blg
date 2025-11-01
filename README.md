@@ -1,6 +1,6 @@
 # Business Logic Gateway Desktop Client
 
-A PyQt6-based desktop shell that separates UI design, configuration management, and execution logic. The application features a configuration editor and real-time log viewer.
+A PyQt6-based desktop shell that separates UI design, configuration management, and execution logic. The application features a configuration editor, a real-time log viewer, and an Ele.me-inspired equipment test center for validating industrial connections.
 
 ## Project Layout
 
@@ -13,6 +13,7 @@ app/
 └── ui/
     ├── config_panel.py      # Standalone configuration editor widget
     ├── log_panel.py         # Log viewer widget
+    ├── test_panel.py        # Multi-device connection testing workspace
     └── main_window.py       # Main window assembly and styling
 main.py                      # Application entry point
 ```

@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 from app.config import AppConfig
 from app.ui.config_panel import ConfigurationPanel
 from app.ui.log_panel import LogPanel
+from app.ui.test_panel import EquipmentTestPanel
 
 
 class MainWindow(QMainWindow):
@@ -37,9 +38,18 @@ class MainWindow(QMainWindow):
         self._config_panel = ConfigurationPanel(self)
         self._log_panel = LogPanel(self)
 
+        self._test_panel = EquipmentTestPanel(self)
+
         self._stack = QStackedWidget(self)
-        self._stack.addWidget(self._config_panel)
-        self._stack.addWidget(self._log_panel)
+
+        self._navigation: list[tuple[str, QWidget]] = [
+            ("配置管理", self._config_panel),
+            ("运行日志", self._log_panel),
+            ("设备联调", self._test_panel),
+        ]
+
+        for _, widget in self._navigation:
+            self._stack.addWidget(widget)
 
         central = QWidget(self)
         self.setCentralWidget(central)
@@ -57,7 +67,7 @@ class MainWindow(QMainWindow):
         self._sidebar.setFixedWidth(200)
 
         first_item: QListWidgetItem | None = None
-        for index, title in enumerate(("配置管理", "运行日志")):
+        for index, (title, _) in enumerate(self._navigation):
             item = QListWidgetItem(title)
             item.setData(Qt.ItemDataRole.UserRole, title)
             self._sidebar.addItem(item)
@@ -99,7 +109,13 @@ class MainWindow(QMainWindow):
     def log_panel(self) -> LogPanel:
         return self._log_panel
 
+    @property
+    def test_panel(self) -> EquipmentTestPanel:
+        return self._test_panel
+
     def _handle_navigation(self, index: int) -> None:
+        if not 0 <= index < len(self._navigation):
+            return
         self._stack.setCurrentIndex(index)
         item = self._sidebar.item(index)
         if item is None:
@@ -145,6 +161,9 @@ class MainWindow(QMainWindow):
         accent = "#00a3ff"
         text_primary = "#0f172a"
         text_on_dark = "#e8f4ff"
+        success = "#00c853"
+        warning = "#ffb300"
+        danger = "#ff5252"
 
         stylesheet = f"""
         QMainWindow {{
@@ -186,6 +205,15 @@ class MainWindow(QMainWindow):
         QLabel#summaryLabel {{
             color: {text_primary};
         }}
+        QLabel[status="pending"] {{
+            color: {warning};
+        }}
+        QLabel[status="success"] {{
+            color: {success};
+        }}
+        QLabel[status="failure"] {{
+            color: {danger};
+        }}
         QGroupBox {{
             border: 1px solid #e2e8f0;
             border-radius: 8px;
@@ -212,11 +240,35 @@ class MainWindow(QMainWindow):
         QPushButton:pressed {{
             background-color: #007ac4;
         }}
+        QPushButton[variant="ghost"] {{
+            background-color: transparent;
+            color: {accent};
+            border: 1px solid rgba(0, 163, 255, 0.25);
+        }}
+        QPushButton[variant="ghost"]:hover {{
+            background-color: rgba(0, 163, 255, 0.08);
+        }}
         QPlainTextEdit#logView {{
             background-color: #0f172a;
             color: {text_on_dark};
             border: 1px solid #1d2b4f;
             border-radius: 8px;
+        }}
+        QTableWidget#deviceTable {{
+            background-color: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            gridline-color: #e2e8f0;
+            selection-background-color: rgba(0, 163, 255, 0.12);
+            selection-color: {text_primary};
+        }}
+        QHeaderView::section {{
+            background-color: #f1f5f9;
+            border: none;
+            border-bottom: 1px solid #e2e8f0;
+            padding: 10px 12px;
+            font-weight: 600;
+            color: {text_primary};
         }}
         QToolBar {{
             background: white;
