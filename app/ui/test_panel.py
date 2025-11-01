@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -14,20 +14,24 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
-    QSpinBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from app.config import DeviceProfile
+
 
 class EquipmentTestPanel(QWidget):
     """Interactive UI for testing connections to multiple industrial devices."""
 
+    devicesChanged = pyqtSignal(object)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._logger = logging.getLogger(__name__)
+        self._suppress_table_events = False
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -78,14 +82,17 @@ class EquipmentTestPanel(QWidget):
         self._ip_input.setPlaceholderText("192.168.10.15")
         form_layout.addRow("IP 地址：", self._ip_input)
 
-        self._port_input = QSpinBox(form_box)
-        self._port_input.setRange(1, 65535)
-        self._port_input.setValue(502)
+        self._port_input = QLineEdit(form_box)
+        self._port_input.setPlaceholderText("可选，部分设备无需端口")
         form_layout.addRow("端口：", self._port_input)
 
         self._protocol_box = QComboBox(form_box)
         self._protocol_box.addItems(["Modbus TCP", "OPC UA", "EtherNet/IP", "PROFINET"])
         form_layout.addRow("协议：", self._protocol_box)
+
+        self._operations_input = QLineEdit(form_box)
+        self._operations_input.setPlaceholderText("例如：ping, 读取心跳寄存器")
+        form_layout.addRow("操作配置：", self._operations_input)
 
         button_row = QHBoxLayout()
         button_row.addStretch()
@@ -96,20 +103,26 @@ class EquipmentTestPanel(QWidget):
 
         layout.addWidget(form_box)
 
-        self._table = QTableWidget(0, 6, self)
+        self._table = QTableWidget(0, 7, self)
         self._table.setObjectName("deviceTable")
         self._table.setHorizontalHeaderLabels([
             "设备",
             "IP 地址",
             "端口",
             "协议",
+            "操作配置",
             "状态",
             "操作",
         ])
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.verticalHeader().setVisible(False)
         self._table.setAlternatingRowColors(True)
-        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._table.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked
+            | QTableWidget.EditTrigger.SelectedClicked
+            | QTableWidget.EditTrigger.EditKeyPressed
+        )
+        self._table.itemChanged.connect(self._handle_item_changed)
 
         layout.addWidget(self._table)
 
@@ -144,36 +157,39 @@ class EquipmentTestPanel(QWidget):
     def _handle_add_device(self) -> None:
         name = self._name_input.text().strip() or "未命名设备"
         ip_address = self._ip_input.text().strip() or "0.0.0.0"
-        port = str(self._port_input.value())
+        port_text = self._port_input.text().strip()
+        operations = self._operations_input.text().strip()
         protocol = self._protocol_box.currentText()
 
-        row = self._table.rowCount()
-        self._table.insertRow(row)
-        for column, text in enumerate((name, ip_address, port, protocol)):
-            item = QTableWidgetItem(text)
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setItem(row, column, item)
+        self._append_device_row(
+            DeviceProfile(
+                name=name,
+                ip_address=ip_address,
+                port=port_text or None,
+                protocol=protocol,
+                operations=operations,
+            )
+        )
 
-        status_label = QLabel("待测试", self._table)
-        status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        status_label.setProperty("status", "pending")
-        self._table.setCellWidget(row, 4, status_label)
-
-        test_button = QPushButton("测试连接", self._table)
-        test_button.clicked.connect(lambda _, r=row: self._run_single_test(r))
-        self._table.setCellWidget(row, 5, test_button)
-
+        port_display = port_text or "—"
         self._logger.info(
-            "已登记设备：%s (%s:%s) 使用 %s 协议", name, ip_address, port, protocol
+            "已登记设备：%s (%s:%s) 使用 %s 协议，操作：%s",
+            name,
+            ip_address,
+            port_display,
+            protocol,
+            operations or "默认",
         )
         self._reset_inputs()
         self._update_summary()
+        self._emit_devices_changed()
 
     def _reset_inputs(self) -> None:
         self._name_input.clear()
         self._ip_input.clear()
-        self._port_input.setValue(502)
+        self._port_input.clear()
         self._protocol_box.setCurrentIndex(0)
+        self._operations_input.clear()
 
     def _run_single_test(self, row: int) -> None:
         if not 0 <= row < self._table.rowCount():
@@ -226,10 +242,35 @@ class EquipmentTestPanel(QWidget):
         self._update_summary()
 
     def _determine_success(self, ip_address: str, port_text: str) -> bool:
-        trusted_prefixes = ("10.", "172.16.", "172.17.", "172.18.", "172.19.", "172.20.", "172.21.", "172.22.", "172.23.", "172.24.", "172.25.", "172.26.", "172.27.", "172.28.", "172.29.", "172.30.", "172.31.", "192.168.")
-        port = int(port_text)
+        trusted_prefixes = (
+            "10.",
+            "172.16.",
+            "172.17.",
+            "172.18.",
+            "172.19.",
+            "172.20.",
+            "172.21.",
+            "172.22.",
+            "172.23.",
+            "172.24.",
+            "172.25.",
+            "172.26.",
+            "172.27.",
+            "172.28.",
+            "172.29.",
+            "172.30.",
+            "172.31.",
+            "192.168.",
+        )
+        port_text = port_text.strip()
         if ip_address.startswith(trusted_prefixes):
             return True
+        if not port_text or port_text in {"—", "0"}:
+            return sum(ord(c) for c in ip_address) % 3 != 0
+        try:
+            port = int(port_text)
+        except ValueError:
+            return False
         return port % 2 == 0
 
     def _run_all_tests(self) -> None:
@@ -240,13 +281,13 @@ class EquipmentTestPanel(QWidget):
             self._run_single_test(row)
 
     def _get_status_widget(self, row: int) -> QLabel | None:
-        widget = self._table.cellWidget(row, 4)
+        widget = self._table.cellWidget(row, 5)
         if isinstance(widget, QLabel):
             return widget
         return None
 
     def _get_button_widget(self, row: int) -> QPushButton | None:
-        widget = self._table.cellWidget(row, 5)
+        widget = self._table.cellWidget(row, 6)
         if isinstance(widget, QPushButton):
             return widget
         return None
@@ -282,3 +323,96 @@ class EquipmentTestPanel(QWidget):
     def _refresh_widget(widget: QWidget) -> None:
         widget.style().unpolish(widget)
         widget.style().polish(widget)
+
+    def _append_device_row(self, profile: DeviceProfile) -> None:
+        previous_state = self._suppress_table_events
+        self._suppress_table_events = True
+        try:
+            row = self._table.rowCount()
+            self._table.insertRow(row)
+
+            name_item = QTableWidgetItem(profile.name)
+            name_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 0, name_item)
+
+            ip_item = QTableWidgetItem(profile.ip_address)
+            ip_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            ip_item.setFlags(ip_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 1, ip_item)
+
+            port_display = profile.port or "—"
+            port_item = QTableWidgetItem(port_display)
+            port_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            port_item.setFlags(port_item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 2, port_item)
+
+            protocol_item = QTableWidgetItem(profile.protocol)
+            protocol_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            protocol_item.setFlags(protocol_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 3, protocol_item)
+
+            operations_item = QTableWidgetItem(profile.operations or "")
+            operations_item.setTextAlignment(
+                Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+            operations_item.setFlags(operations_item.flags() | Qt.ItemFlag.ItemIsEditable)
+            self._table.setItem(row, 4, operations_item)
+
+            status_label = QLabel("待测试", self._table)
+            status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            status_label.setProperty("status", "pending")
+            self._table.setCellWidget(row, 5, status_label)
+
+            test_button = QPushButton("测试连接", self._table)
+            test_button.clicked.connect(lambda _, r=row: self._run_single_test(r))
+            self._table.setCellWidget(row, 6, test_button)
+        finally:
+            self._suppress_table_events = previous_state
+
+    def _emit_devices_changed(self) -> None:
+        self.devicesChanged.emit(self.get_devices())
+
+    def _handle_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._suppress_table_events:
+            return
+        if item.column() not in (2, 4):
+            return
+        self._update_summary()
+        self._emit_devices_changed()
+
+    def get_devices(self) -> list[DeviceProfile]:
+        devices: list[DeviceProfile] = []
+        for row in range(self._table.rowCount()):
+            name_item = self._table.item(row, 0)
+            ip_item = self._table.item(row, 1)
+            port_item = self._table.item(row, 2)
+            protocol_item = self._table.item(row, 3)
+            operations_item = self._table.item(row, 4)
+            if not all([name_item, ip_item, port_item, protocol_item]):
+                continue
+            port_text = port_item.text().strip() if port_item else ""
+            if port_text in {"—", ""}:
+                port_value = None
+            else:
+                port_value = port_text
+            devices.append(
+                DeviceProfile(
+                    name=name_item.text(),
+                    ip_address=ip_item.text(),
+                    port=port_value,
+                    protocol=protocol_item.text(),
+                    operations=operations_item.text() if operations_item else "",
+                )
+            )
+        return devices
+
+    def set_devices(self, devices: list[DeviceProfile]) -> None:
+        self._suppress_table_events = True
+        try:
+            self._table.setRowCount(0)
+            for profile in devices:
+                self._append_device_row(profile)
+        finally:
+            self._suppress_table_events = False
+        self._update_summary()

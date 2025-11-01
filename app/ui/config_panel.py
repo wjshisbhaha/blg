@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.config import AppConfig
+from app.config import AppConfig, DeviceProfile
 
 
 class ConfigurationPanel(QWidget):
@@ -30,6 +30,7 @@ class ConfigurationPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._baseline = AppConfig()
+        self._devices: list[DeviceProfile] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -91,6 +92,7 @@ class ConfigurationPanel(QWidget):
     def set_config(self, config: AppConfig, *, remember: bool = True) -> None:
         if remember:
             self._baseline = AppConfig.from_dict(config.to_dict())
+        self._devices = [DeviceProfile.from_dict(d.to_dict()) for d in config.devices]
         self.environment_box.setCurrentText(config.environment)
         self.api_endpoint_edit.setText(config.api_endpoint)
         self.refresh_spin.setValue(config.refresh_interval)
@@ -105,7 +107,12 @@ class ConfigurationPanel(QWidget):
             refresh_interval=self.refresh_spin.value(),
             enable_notifications=self.notifications_check.isChecked(),
             log_level=self.log_level_box.currentText(),
+            devices=[DeviceProfile.from_dict(d.to_dict()) for d in self._devices],
         )
+
+    def set_devices(self, devices: list[DeviceProfile]) -> None:
+        self._devices = [DeviceProfile.from_dict(d.to_dict()) for d in devices]
+        self._update_summary()
 
     def _emit_config(self) -> None:
         config = self.get_config()
@@ -118,6 +125,10 @@ class ConfigurationPanel(QWidget):
         for key, value in asdict(config).items():
             if isinstance(value, bool):
                 display = "Enabled" if value else "Disabled"
+            elif key == "devices" and isinstance(value, list):
+                display = f"{len(value)} configured"
+            elif isinstance(value, (list, dict)):
+                display = str(value)
             else:
                 display = value
             parts.append(f"{key.replace('_', ' ').title()}: {display}")

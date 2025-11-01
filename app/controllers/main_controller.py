@@ -8,7 +8,7 @@ from pathlib import Path
 from PyQt6.QtCore import QObject
 
 from app import config as config_module
-from app.config import AppConfig
+from app.config import AppConfig, DeviceProfile
 from app.logging_utils import QtLogHandler, setup_logging
 from app.ui.main_window import MainWindow
 
@@ -34,6 +34,7 @@ class MainController(QObject):
         self._window.reload_action.triggered.connect(self._reload_config)
         self._window.execute_action.triggered.connect(self._execute_job)
         self._window.clear_log_action.triggered.connect(self._window.log_panel.log_view.clear)
+        self._window.test_panel.devicesChanged.connect(self._handle_devices_changed)
 
     def _setup_logging(self) -> None:
         log_file = self._config_path.parent / "application.log"
@@ -45,6 +46,7 @@ class MainController(QObject):
         self._logger.info("Logger initialised")
 
     def _handle_config_changed(self, config: AppConfig) -> None:
+        config.devices = self._clone_devices(self._window.test_panel.get_devices())
         self._config = config
         self._window.config_panel.set_config(config)
         self._logger.info("Configuration updated via UI: %s", config)
@@ -54,6 +56,7 @@ class MainController(QObject):
     def _save_config_dialog(self) -> None:
         path = self._window.ask_config_path(save=True)
         target = path or self._config_path
+        self._sync_devices_to_config()
         config_module.save_config(self._config, target)
         self._window.set_status(f"Configuration saved to {target}")
         self._logger.info("Configuration persisted to %s", target)
@@ -68,6 +71,7 @@ class MainController(QObject):
         self._update_log_levels(self._get_log_level(self._config.log_level))
 
     def _execute_job(self) -> None:
+        self._sync_devices_to_config()
         self._window.set_status("Executing workflow...")
         self._logger.info("Starting workflow in %s environment", self._config.environment)
         # Placeholder for real business logic execution. Demonstrate lifecycle logs.
@@ -91,3 +95,26 @@ class MainController(QObject):
         root.setLevel(level)
         for handler in root.handlers:
             handler.setLevel(level)
+
+    def _handle_devices_changed(self, devices: list[DeviceProfile]) -> None:
+        cloned = self._clone_devices(devices)
+        self._config.devices = cloned
+        self._window.config_panel.set_devices(cloned)
+        self._logger.info("Devices updated via test panel: %s", cloned)
+        self._window.set_status("设备清单已更新 (未保存)")
+
+    def _sync_devices_to_config(self) -> None:
+        devices = self._window.test_panel.get_devices()
+        cloned = self._clone_devices(devices)
+        self._config.devices = cloned
+        self._window.config_panel.set_devices(cloned)
+
+    @staticmethod
+    def _clone_devices(devices: list[DeviceProfile]) -> list[DeviceProfile]:
+        cloned: list[DeviceProfile] = []
+        for device in devices:
+            if isinstance(device, DeviceProfile):
+                cloned.append(DeviceProfile.from_dict(device.to_dict()))
+            elif isinstance(device, dict):
+                cloned.append(DeviceProfile.from_dict(device))
+        return cloned

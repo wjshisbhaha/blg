@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Application configuration models and helpers."""
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +14,40 @@ CONFIG_DIR_NAME = ".blg_app"
 
 
 @dataclass
+class DeviceProfile:
+    """Persisted description of a device used for connectivity tests."""
+
+    name: str
+    ip_address: str
+    port: str | None = None
+    protocol: str = "Modbus TCP"
+    operations: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "ip_address": self.ip_address,
+            "port": self.port,
+            "protocol": self.protocol,
+            "operations": self.operations,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DeviceProfile":
+        return cls(
+            name=str(data.get("name", "未命名设备")),
+            ip_address=str(data.get("ip_address", "0.0.0.0")),
+            port=(
+                str(data.get("port"))
+                if data.get("port") not in (None, "", "—")
+                else None
+            ),
+            protocol=str(data.get("protocol", "Modbus TCP")),
+            operations=str(data.get("operations", "")),
+        )
+
+
+@dataclass
 class AppConfig:
     """Configuration container for the desktop client."""
 
@@ -22,6 +56,7 @@ class AppConfig:
     refresh_interval: int = 5
     enable_notifications: bool = True
     log_level: str = "INFO"
+    devices: list[DeviceProfile] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -34,12 +69,20 @@ class AppConfig:
         else:
             enable_notifications = bool(raw_notifications)
 
+        devices_data = data.get("devices", [])
+        devices: list[DeviceProfile] = []
+        if isinstance(devices_data, list):
+            for entry in devices_data:
+                if isinstance(entry, dict):
+                    devices.append(DeviceProfile.from_dict(entry))
+
         return cls(
             environment=data.get("environment", "Production"),
             api_endpoint=data.get("api_endpoint", "https://api.example.com"),
             refresh_interval=int(data.get("refresh_interval", 5)),
             enable_notifications=enable_notifications,
             log_level=str(data.get("log_level", "INFO")).upper(),
+            devices=devices,
         )
 
 

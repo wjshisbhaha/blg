@@ -156,10 +156,11 @@ class MainWindow(QMainWindow):
 
     def _apply_styles(self) -> None:
         background = "#f5f6fa"
-        sidebar_bg = "#10192e"
-        sidebar_hover = "#1d2b4f"
+        sidebar_bg = "#f1f2f4"
+        sidebar_hover = "#e2e5ea"
         accent = "#00a3ff"
         text_primary = "#0f172a"
+        text_on_sidebar = "#1f2937"
         text_on_dark = "#e8f4ff"
         success = "#00c853"
         warning = "#ffb300"
@@ -181,7 +182,7 @@ class MainWindow(QMainWindow):
         }}
         QListWidget#sidebar {{
             background-color: {sidebar_bg};
-            color: {text_on_dark};
+            color: {text_on_sidebar};
             border: none;
             padding: 24px 12px;
         }}
@@ -284,6 +285,7 @@ class MainWindow(QMainWindow):
 
     def apply_config(self, config: AppConfig) -> None:
         self._config_panel.set_config(config)
+        self._test_panel.set_devices(config.devices)
 
     def display_log(self, message: str) -> None:
         self._log_panel.messageEmitted.emit(message)
