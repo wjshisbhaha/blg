@@ -8,10 +8,17 @@ from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtWidgets import (
     QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
-    QSplitter,
+    QStackedWidget,
     QStatusBar,
     QToolBar,
+    QVBoxLayout,
+    QWidget,
 )
 
 from app.config import AppConfig
@@ -30,12 +37,49 @@ class MainWindow(QMainWindow):
         self._config_panel = ConfigurationPanel(self)
         self._log_panel = LogPanel(self)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.addWidget(self._config_panel)
-        splitter.addWidget(self._log_panel)
-        splitter.setSizes([400, 700])
+        self._stack = QStackedWidget(self)
+        self._stack.addWidget(self._config_panel)
+        self._stack.addWidget(self._log_panel)
 
-        self.setCentralWidget(splitter)
+        central = QWidget(self)
+        self.setCentralWidget(central)
+
+        central_layout = QHBoxLayout()
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central.setLayout(central_layout)
+
+        self._sidebar = QListWidget(central)
+        self._sidebar.setObjectName("sidebar")
+        self._sidebar.setSpacing(4)
+        self._sidebar.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self._sidebar.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._sidebar.setFixedWidth(200)
+
+        first_item: QListWidgetItem | None = None
+        for index, title in enumerate(("配置管理", "运行日志")):
+            item = QListWidgetItem(title)
+            item.setData(Qt.ItemDataRole.UserRole, title)
+            self._sidebar.addItem(item)
+            if index == 0:
+                first_item = item
+
+        if first_item is not None:
+            self._sidebar.setCurrentItem(first_item)
+
+        content_frame = QFrame(central)
+        content_frame.setObjectName("contentFrame")
+        content_layout = QVBoxLayout(content_frame)
+        content_layout.setContentsMargins(24, 24, 24, 24)
+        content_layout.setSpacing(16)
+
+        self._breadcrumb = QLabel("首页 / 配置管理", content_frame)
+        self._breadcrumb.setObjectName("breadcrumb")
+        content_layout.addWidget(self._breadcrumb)
+        content_layout.addWidget(self._stack, stretch=1)
+
+        central_layout.addWidget(self._sidebar)
+        central_layout.addWidget(content_frame, stretch=1)
 
         self._toolbar = self._create_toolbar()
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self._toolbar)
@@ -45,6 +89,7 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage("Ready")
 
         self._apply_styles()
+        self._sidebar.currentRowChanged.connect(self._handle_navigation)
 
     @property
     def config_panel(self) -> ConfigurationPanel:
@@ -53,6 +98,14 @@ class MainWindow(QMainWindow):
     @property
     def log_panel(self) -> LogPanel:
         return self._log_panel
+
+    def _handle_navigation(self, index: int) -> None:
+        self._stack.setCurrentIndex(index)
+        item = self._sidebar.item(index)
+        if item is None:
+            return
+        title = item.data(Qt.ItemDataRole.UserRole) or item.text()
+        self._breadcrumb.setText(f"首页 / {title}")
 
     def set_status(self, message: str, timeout: int = 5000) -> None:
         self._status_bar.showMessage(message, timeout)
@@ -86,63 +139,93 @@ class MainWindow(QMainWindow):
         return toolbar
 
     def _apply_styles(self) -> None:
-        palette_color = "#0F172A"
-        accent = "#2563EB"
-        secondary = "#1E293B"
-        text_color = "#E2E8F0"
+        background = "#f5f6fa"
+        sidebar_bg = "#10192e"
+        sidebar_hover = "#1d2b4f"
+        accent = "#00a3ff"
+        text_primary = "#0f172a"
+        text_on_dark = "#e8f4ff"
 
         stylesheet = f"""
         QMainWindow {{
-            background-color: {palette_color};
-            color: {text_color};
+            background-color: {background};
+            color: {text_primary};
+        }}
+        QWidget#contentFrame {{
+            background-color: white;
+            border-radius: 12px;
+        }}
+        QLabel#breadcrumb {{
+            font-size: 15px;
+            color: {text_primary};
+            font-weight: 500;
+        }}
+        QListWidget#sidebar {{
+            background-color: {sidebar_bg};
+            color: {text_on_dark};
+            border: none;
+            padding: 24px 12px;
+        }}
+        QListWidget#sidebar::item {{
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin: 4px 0;
+        }}
+        QListWidget#sidebar::item:selected {{
+            background-color: {accent};
+            color: white;
+        }}
+        QListWidget#sidebar::item:hover {{
+            background-color: {sidebar_hover};
         }}
         QLabel#logHeader {{
             font-weight: 600;
             font-size: 16px;
-            color: {text_color};
+            color: {text_primary};
         }}
         QLabel#summaryLabel {{
-            color: {text_color};
+            color: {text_primary};
         }}
         QGroupBox {{
-            border: 1px solid {secondary};
-            border-radius: 6px;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
             margin-top: 12px;
-            background-color: {secondary};
+            background-color: #f9fafc;
         }}
         QGroupBox::title {{
             subcontrol-origin: margin;
             subcontrol-position: top left;
             padding: 6px;
-            color: {text_color};
+            color: {text_primary};
             font-weight: 600;
         }}
         QPushButton {{
             background-color: {accent};
-            color: {text_color};
-            border-radius: 4px;
-            padding: 6px 12px;
+            color: white;
+            border-radius: 6px;
+            padding: 8px 18px;
+            font-weight: 500;
         }}
         QPushButton:hover {{
-            background-color: #1D4ED8;
+            background-color: #0090e8;
         }}
         QPushButton:pressed {{
-            background-color: #1E40AF;
+            background-color: #007ac4;
         }}
         QPlainTextEdit#logView {{
-            background-color: #0B1120;
-            color: {text_color};
-            border: 1px solid {secondary};
-            border-radius: 6px;
+            background-color: #0f172a;
+            color: {text_on_dark};
+            border: 1px solid #1d2b4f;
+            border-radius: 8px;
         }}
         QToolBar {{
-            background: {secondary};
+            background: white;
             spacing: 12px;
             padding: 4px 12px;
         }}
         QStatusBar {{
-            background: {secondary};
-            color: {text_color};
+            background: white;
+            color: {text_primary};
         }}
         """
         self.setStyleSheet(stylesheet)
