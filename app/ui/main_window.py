@@ -36,15 +36,17 @@ class MainWindow(QMainWindow):
         self.resize(1100, 720)
 
         self._config_panel = ConfigurationPanel(self)
-        self._log_panel = LogPanel(self)
-
         self._test_panel = EquipmentTestPanel(self)
+        self._log_footer = LogPanel(self)
+        self._log_footer.setMinimumHeight(200)
+        self._log_page = LogPanel(self)
+        self._log_panels: tuple[LogPanel, ...] = (self._log_footer, self._log_page)
 
         self._stack = QStackedWidget(self)
 
         self._navigation: list[tuple[str, QWidget]] = [
             ("配置管理", self._config_panel),
-            ("运行日志", self._log_panel),
+            ("运行日志", self._log_page),
             ("设备联调", self._test_panel),
         ]
 
@@ -87,6 +89,7 @@ class MainWindow(QMainWindow):
         self._breadcrumb.setObjectName("breadcrumb")
         content_layout.addWidget(self._breadcrumb)
         content_layout.addWidget(self._stack, stretch=1)
+        content_layout.addWidget(self._log_footer)
 
         central_layout.addWidget(self._sidebar)
         central_layout.addWidget(content_frame, stretch=1)
@@ -107,7 +110,7 @@ class MainWindow(QMainWindow):
 
     @property
     def log_panel(self) -> LogPanel:
-        return self._log_panel
+        return self._log_footer
 
     @property
     def test_panel(self) -> EquipmentTestPanel:
@@ -174,6 +177,11 @@ class MainWindow(QMainWindow):
         QWidget#contentFrame {{
             background-color: white;
             border-radius: 12px;
+        }}
+        QWidget#logContainer {{
+            background-color: white;
+            border-radius: 12px;
+            border: 1px solid #e2e8f0;
         }}
         QLabel#breadcrumb {{
             font-size: 15px;
@@ -288,4 +296,9 @@ class MainWindow(QMainWindow):
         self._test_panel.set_devices(config.devices)
 
     def display_log(self, message: str) -> None:
-        self._log_panel.messageEmitted.emit(message)
+        for panel in self._log_panels:
+            panel.messageEmitted.emit(message)
+
+    def clear_logs(self) -> None:
+        for panel in self._log_panels:
+            panel.log_view.clear()

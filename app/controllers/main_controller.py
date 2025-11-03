@@ -33,7 +33,7 @@ class MainController(QObject):
         self._window.save_action.triggered.connect(self._save_config_dialog)
         self._window.reload_action.triggered.connect(self._reload_config)
         self._window.execute_action.triggered.connect(self._execute_job)
-        self._window.clear_log_action.triggered.connect(self._window.log_panel.log_view.clear)
+        self._window.clear_log_action.triggered.connect(self._window.clear_logs)
         self._window.test_panel.devicesChanged.connect(self._handle_devices_changed)
 
     def _setup_logging(self) -> None:
