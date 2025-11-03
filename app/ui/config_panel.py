@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from app.config import AppConfig, DeviceProfile
+from app.config import AppConfig, DeviceProfile, PiControlBinding
 
 
 class ConfigurationPanel(QWidget):
@@ -31,6 +31,7 @@ class ConfigurationPanel(QWidget):
         super().__init__(parent)
         self._baseline = AppConfig()
         self._devices: list[DeviceProfile] = []
+        self._pi_controls: list[PiControlBinding] = []
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -93,6 +94,7 @@ class ConfigurationPanel(QWidget):
         if remember:
             self._baseline = AppConfig.from_dict(config.to_dict())
         self._devices = [DeviceProfile.from_dict(d.to_dict()) for d in config.devices]
+        self._pi_controls = [PiControlBinding.from_dict(c.to_dict()) for c in config.pi_controls]
         self.environment_box.setCurrentText(config.environment)
         self.api_endpoint_edit.setText(config.api_endpoint)
         self.refresh_spin.setValue(config.refresh_interval)
@@ -108,10 +110,15 @@ class ConfigurationPanel(QWidget):
             enable_notifications=self.notifications_check.isChecked(),
             log_level=self.log_level_box.currentText(),
             devices=[DeviceProfile.from_dict(d.to_dict()) for d in self._devices],
+            pi_controls=[PiControlBinding.from_dict(c.to_dict()) for c in self._pi_controls],
         )
 
     def set_devices(self, devices: list[DeviceProfile]) -> None:
         self._devices = [DeviceProfile.from_dict(d.to_dict()) for d in devices]
+        self._update_summary()
+
+    def set_pi_controls(self, controls: list[PiControlBinding]) -> None:
+        self._pi_controls = [PiControlBinding.from_dict(c.to_dict()) for c in controls]
         self._update_summary()
 
     def _emit_config(self) -> None:
@@ -127,6 +134,8 @@ class ConfigurationPanel(QWidget):
                 display = "Enabled" if value else "Disabled"
             elif key == "devices" and isinstance(value, list):
                 display = f"{len(value)} configured"
+            elif key == "pi_controls" and isinstance(value, list):
+                display = f"{len(value)} mapped"
             elif isinstance(value, (list, dict)):
                 display = str(value)
             else:

@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 from app.config import AppConfig
 from app.ui.config_panel import ConfigurationPanel
 from app.ui.log_panel import LogPanel
+from app.ui.pi_control_panel import PiControlPanel
 from app.ui.test_panel import EquipmentTestPanel
 
 
@@ -37,6 +38,7 @@ class MainWindow(QMainWindow):
 
         self._config_panel = ConfigurationPanel(self)
         self._test_panel = EquipmentTestPanel(self)
+        self._pi_panel = PiControlPanel(self)
         self._log_footer = LogPanel(self)
         self._log_footer.setMinimumHeight(200)
         self._log_page = LogPanel(self)
@@ -46,8 +48,9 @@ class MainWindow(QMainWindow):
 
         self._navigation: list[tuple[str, QWidget]] = [
             ("配置管理", self._config_panel),
-            ("运行日志", self._log_page),
+            ("Pi 六轴控制", self._pi_panel),
             ("设备联调", self._test_panel),
+            ("运行日志", self._log_page),
         ]
 
         for _, widget in self._navigation:
@@ -115,6 +118,10 @@ class MainWindow(QMainWindow):
     @property
     def test_panel(self) -> EquipmentTestPanel:
         return self._test_panel
+
+    @property
+    def pi_panel(self) -> PiControlPanel:
+        return self._pi_panel
 
     def _handle_navigation(self, index: int) -> None:
         if not 0 <= index < len(self._navigation):
@@ -294,6 +301,7 @@ class MainWindow(QMainWindow):
     def apply_config(self, config: AppConfig) -> None:
         self._config_panel.set_config(config)
         self._test_panel.set_devices(config.devices)
+        self._pi_panel.set_controls(config.pi_controls)
 
     def display_log(self, message: str) -> None:
         for panel in self._log_panels:

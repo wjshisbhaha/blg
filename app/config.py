@@ -48,6 +48,49 @@ class DeviceProfile:
 
 
 @dataclass
+class PiControlBinding:
+    """Represents a single axis/button mapping for the Pi controller."""
+
+    axis: str
+    gpio_pin: str
+    command: str
+    description: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "axis": self.axis,
+            "gpio_pin": self.gpio_pin,
+            "command": self.command,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PiControlBinding":
+        return cls(
+            axis=str(data.get("axis", "X+")),
+            gpio_pin=str(data.get("gpio_pin", "17")),
+            command=str(data.get("command", "")),
+            description=str(data.get("description", "")),
+        )
+
+
+def default_pi_bindings() -> list[PiControlBinding]:
+    """Return Ele.me-styled defaults for the Pi six-axis controller."""
+
+    defaults = [
+        ("X+", "17", "move_x_positive"),
+        ("X-", "27", "move_x_negative"),
+        ("Y+", "22", "move_y_positive"),
+        ("Y-", "23", "move_y_negative"),
+        ("Z+", "24", "move_z_positive"),
+        ("Z-", "25", "move_z_negative"),
+    ]
+    return [
+        PiControlBinding(axis=axis, gpio_pin=gpio, command=command) for axis, gpio, command in defaults
+    ]
+
+
+@dataclass
 class AppConfig:
     """Configuration container for the desktop client."""
 
@@ -57,6 +100,7 @@ class AppConfig:
     enable_notifications: bool = True
     log_level: str = "INFO"
     devices: list[DeviceProfile] = field(default_factory=list)
+    pi_controls: list[PiControlBinding] = field(default_factory=default_pi_bindings)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -76,6 +120,16 @@ class AppConfig:
                 if isinstance(entry, dict):
                     devices.append(DeviceProfile.from_dict(entry))
 
+        controls_data = data.get("pi_controls")
+        pi_controls: list[PiControlBinding]
+        if isinstance(controls_data, list):
+            pi_controls = []
+            for entry in controls_data:
+                if isinstance(entry, dict):
+                    pi_controls.append(PiControlBinding.from_dict(entry))
+        else:
+            pi_controls = default_pi_bindings()
+
         return cls(
             environment=data.get("environment", "Production"),
             api_endpoint=data.get("api_endpoint", "https://api.example.com"),
@@ -83,6 +137,7 @@ class AppConfig:
             enable_notifications=enable_notifications,
             log_level=str(data.get("log_level", "INFO")).upper(),
             devices=devices,
+            pi_controls=pi_controls,
         )
 
 
