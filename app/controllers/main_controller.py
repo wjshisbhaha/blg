@@ -1,0 +1,145 @@
+"""Application controller orchestrating UI interactions."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from PyQt6.QtCore import QObject
+
+from app import config as config_module
+from app.config import AppConfig, DeviceProfile, PiControlBinding
+from app.logging_utils import QtLogHandler, setup_logging
+from app.ui.main_window import MainWindow
+
+
+class MainController(QObject):
+    """Glue layer between UI widgets and application services."""
+
+    def __init__(self, window: MainWindow, config_path: Path | None = None) -> None:
+        super().__init__(window)
+        self._window = window
+        self._config_path = config_path or config_module.get_default_config_path()
+        self._config = config_module.load_config(self._config_path)
+        self._setup_logging()
+        self._connect_signals()
+        self._window.apply_config(self._config)
+        self._window.set_status("Configuration loaded")
+
+    def _connect_signals(self) -> None:
+        panel = self._window.config_panel
+        panel.configChanged.connect(self._handle_config_changed)
+
+        self._window.save_action.triggered.connect(self._save_config_dialog)
+        self._window.reload_action.triggered.connect(self._reload_config)
+        self._window.execute_action.triggered.connect(self._execute_job)
+        self._window.clear_log_action.triggered.connect(self._window.clear_logs)
+        self._window.test_panel.devicesChanged.connect(self._handle_devices_changed)
+        self._window.pi_panel.controlsChanged.connect(self._handle_pi_controls_changed)
+
+    def _setup_logging(self) -> None:
+        log_file = self._config_path.parent / "application.log"
+        ui_handler = QtLogHandler(self._window.display_log)
+        level = self._get_log_level(self._config.log_level)
+        setup_logging(log_file=log_file, level=level, ui_handler=ui_handler)
+        self._update_log_levels(level)
+        self._logger = logging.getLogger(__name__)
+        self._logger.info("Logger initialised")
+
+    def _handle_config_changed(self, config: AppConfig) -> None:
+        config.devices = self._clone_devices(self._window.test_panel.get_devices())
+        config.pi_controls = self._clone_controls(self._window.pi_panel.get_controls())
+        self._config = config
+        self._window.config_panel.set_config(config)
+        self._window.config_panel.set_pi_controls(config.pi_controls)
+        self._logger.info("Configuration updated via UI: %s", config)
+        self._window.set_status("Configuration updated (not yet saved)")
+        self._update_log_levels(self._get_log_level(config.log_level))
+
+    def _save_config_dialog(self) -> None:
+        path = self._window.ask_config_path(save=True)
+        target = path or self._config_path
+        self._sync_panels_to_config()
+        config_module.save_config(self._config, target)
+        self._window.set_status(f"Configuration saved to {target}")
+        self._logger.info("Configuration persisted to %s", target)
+
+    def _reload_config(self) -> None:
+        path = self._window.ask_config_path(save=False)
+        target = path or self._config_path
+        self._config = config_module.load_config(target)
+        self._window.apply_config(self._config)
+        self._window.config_panel.set_pi_controls(self._config.pi_controls)
+        self._window.set_status(f"Configuration loaded from {target}")
+        self._logger.info("Configuration reloaded from %s", target)
+        self._update_log_levels(self._get_log_level(self._config.log_level))
+
+    def _execute_job(self) -> None:
+        self._sync_panels_to_config()
+        self._window.set_status("Executing workflow...")
+        self._logger.info("Starting workflow in %s environment", self._config.environment)
+        # Placeholder for real business logic execution. Demonstrate lifecycle logs.
+        self._emit_progress("Validating configuration")
+        self._emit_progress("Connecting to endpoint %s", self._config.api_endpoint)
+        self._emit_progress("Processing data batches")
+        self._logger.info("Workflow completed successfully")
+        self._window.set_status("Execution complete")
+
+    def _emit_progress(self, message: str, *args) -> None:
+        self._logger.debug(message, *args)
+        self._logger.info(message, *args)
+
+    @staticmethod
+    def _get_log_level(level_name: str) -> int:
+        return getattr(logging, level_name.upper(), logging.INFO)
+
+    @staticmethod
+    def _update_log_levels(level: int) -> None:
+        root = logging.getLogger()
+        root.setLevel(level)
+        for handler in root.handlers:
+            handler.setLevel(level)
+
+    def _handle_devices_changed(self, devices: list[DeviceProfile]) -> None:
+        cloned = self._clone_devices(devices)
+        self._config.devices = cloned
+        self._window.config_panel.set_devices(cloned)
+        self._logger.info("Devices updated via test panel: %s", cloned)
+        self._window.set_status("设备清单已更新 (未保存)")
+
+    def _handle_pi_controls_changed(self, controls: list[PiControlBinding]) -> None:
+        cloned = self._clone_controls(controls)
+        self._config.pi_controls = cloned
+        self._window.config_panel.set_pi_controls(cloned)
+        self._logger.info("Pi 六轴映射已更新: %s", cloned)
+        self._window.set_status("Pi 控制映射已更新 (未保存)")
+
+    def _sync_panels_to_config(self) -> None:
+        devices = self._window.test_panel.get_devices()
+        cloned = self._clone_devices(devices)
+        self._config.devices = cloned
+        self._window.config_panel.set_devices(cloned)
+        controls = self._window.pi_panel.get_controls()
+        cloned_controls = self._clone_controls(controls)
+        self._config.pi_controls = cloned_controls
+        self._window.config_panel.set_pi_controls(cloned_controls)
+
+    @staticmethod
+    def _clone_devices(devices: list[DeviceProfile]) -> list[DeviceProfile]:
+        cloned: list[DeviceProfile] = []
+        for device in devices:
+            if isinstance(device, DeviceProfile):
+                cloned.append(DeviceProfile.from_dict(device.to_dict()))
+            elif isinstance(device, dict):
+                cloned.append(DeviceProfile.from_dict(device))
+        return cloned
+
+    @staticmethod
+    def _clone_controls(controls: list[PiControlBinding]) -> list[PiControlBinding]:
+        cloned: list[PiControlBinding] = []
+        for control in controls:
+            if isinstance(control, PiControlBinding):
+                cloned.append(PiControlBinding.from_dict(control.to_dict()))
+            elif isinstance(control, dict):
+                cloned.append(PiControlBinding.from_dict(control))
+        return cloned
