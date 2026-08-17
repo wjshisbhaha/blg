@@ -89,6 +89,7 @@ def export_results_excel(results: list[TestResult], output_path: str) -> Path:
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+        from openpyxl.utils import get_column_letter
     except ImportError as exc:
         raise HudProtocolError(
             "Excel export requires openpyxl; install it with: python3 -m pip install openpyxl"
@@ -134,25 +135,36 @@ def export_results_excel(results: list[TestResult], output_path: str) -> Path:
         bottom=Side(style="thin", color="D9E1F2"),
     )
 
+    configs_per_row = 3
+    block_gap = 1
     for command, blocks in grouped.items():
         sheet = workbook.create_sheet(f"{command}测试结果")
         sheet.sheet_view.showGridLines = False
-        sheet.freeze_panes = "A2"
-        for block_index, (config, rows) in enumerate(blocks):
-            column = 1 + block_index * 2
-            header = sheet.cell(row=1, column=column, value=f"{config}（配置文件名称）")
-            header.fill = PatternFill("solid", fgColor=fills[block_index % len(fills)])
-            header.font = Font(bold=True, color="1F2937")
-            header.alignment = Alignment(horizontal="center", vertical="center")
-            header.border = header_border
-            sheet.column_dimensions[header.column_letter].width = 24
+        start_row = 1
+        for group_start in range(0, len(blocks), configs_per_row):
+            group = blocks[group_start : group_start + configs_per_row]
+            max_values = max(len(rows) for _, rows in group)
+            for position, (config, rows) in enumerate(group):
+                block_index = group_start + position
+                column = 1 + position * (1 + block_gap)
+                header = sheet.cell(
+                    row=start_row,
+                    column=column,
+                    value=f"{config}（配置文件名称）",
+                )
+                header.fill = PatternFill("solid", fgColor=fills[block_index % len(fills)])
+                header.font = Font(bold=True, color="1F2937")
+                header.alignment = Alignment(horizontal="center", vertical="center")
+                header.border = header_border
+                sheet.column_dimensions[get_column_letter(column)].width = 24
+                sheet.row_dimensions[start_row].height = 24
 
-            for row_index, row in enumerate(rows, start=2):
-                cell = sheet.cell(row=row_index, column=column, value=row[0])
-                cell.alignment = Alignment(horizontal="center", vertical="center")
-                cell.border = data_border
-                cell.number_format = "0.###############"
-        sheet.row_dimensions[1].height = 24
+                for value_index, row in enumerate(rows, start=1):
+                    cell = sheet.cell(row=start_row + value_index, column=column, value=row[0])
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.border = data_border
+                    cell.number_format = "0.###############"
+            start_row += max_values + 2
 
     workbook.save(output)
     return output
