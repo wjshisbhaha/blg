@@ -56,8 +56,36 @@ def parse_t24_rows(response: str) -> list[list[float]]:
     return rows
 
 
-def export_t24_excel(results: list[TestResult], output_path: str) -> Path:
-    """Export t24 column-2 values as side-by-side configuration columns."""
+def parse_t6_rows(response: str) -> list[list[float]]:
+    """Extract only column 2 from each comma/newline-separated t6 data row."""
+    match = re.match(r"^t6_Result(?:\(\d+\))?:(.*?)%?$", response.strip(), re.DOTALL)
+    if not match:
+        raise HudProtocolError(f"Invalid t6 response format: {response!r}")
+
+    groups = [
+        group.strip()
+        for group in re.split(r",|\r?\n", match.group(1))
+        if group.strip()
+    ]
+    if not groups:
+        raise HudProtocolError("t6 returned no data rows")
+
+    rows: list[list[float]] = []
+    for index, group in enumerate(groups, start=1):
+        parts = group.split()
+        if len(parts) < 2:
+            raise HudProtocolError(f"t6 row {index} has no second column: {group!r}")
+        try:
+            rows.append([float(parts[1])])
+        except ValueError as exc:
+            raise HudProtocolError(
+                f"t6 row {index} has a non-numeric second-column value: {parts[1]!r}"
+            ) from exc
+    return rows
+
+
+def export_results_excel(results: list[TestResult], output_path: str) -> Path:
+    """Export t24/t6 column-2 values into separate measurement sheets."""
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -66,28 +94,31 @@ def export_t24_excel(results: list[TestResult], output_path: str) -> Path:
             "Excel export requires openpyxl; install it with: python3 -m pip install openpyxl"
         ) from exc
 
-    blocks: list[tuple[str, list[list[float]]]] = []
-    by_config: dict[str, list[list[float]]] = {}
+    supported = {"t24": parse_t24_rows, "t6": parse_t6_rows}
+    grouped: dict[str, list[tuple[str, list[list[float]]]]] = {}
+    indexes: dict[str, dict[str, list[list[float]]]] = {}
     for result in results:
-        if result.command.split("/", 1)[0] != "t24":
+        command = result.command.split("/", 1)[0]
+        parser = supported.get(command)
+        if parser is None:
             continue
-        if result.config not in by_config:
+        if command not in grouped:
+            grouped[command] = []
+            indexes[command] = {}
+        if result.config not in indexes[command]:
             rows: list[list[float]] = []
-            by_config[result.config] = rows
-            blocks.append((result.config, rows))
-        by_config[result.config].extend(parse_t24_rows(result.response))
+            indexes[command][result.config] = rows
+            grouped[command].append((result.config, rows))
+        indexes[command][result.config].extend(parser(result.response))
 
-    if not blocks:
-        raise HudProtocolError("No t24 results were available for Excel export")
+    if not grouped:
+        raise HudProtocolError("No t24 or t6 results were available for Excel export")
 
     output = Path(output_path).expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
 
     workbook = Workbook()
-    sheet = workbook.active
-    sheet.title = "t24测试结果"
-    sheet.sheet_view.showGridLines = False
-    sheet.freeze_panes = "A2"
+    workbook.remove(workbook.active)
 
     fills = ["E2F0D9", "DDEBF7", "FFF2CC", "FCE4D6"]
     header_border = Border(
@@ -103,24 +134,33 @@ def export_t24_excel(results: list[TestResult], output_path: str) -> Path:
         bottom=Side(style="thin", color="D9E1F2"),
     )
 
-    for block_index, (config, rows) in enumerate(blocks):
-        column = 1 + block_index * 2
-        header = sheet.cell(row=1, column=column, value=f"{config}（配置文件名称）")
-        header.fill = PatternFill("solid", fgColor=fills[block_index % len(fills)])
-        header.font = Font(bold=True, color="1F2937")
-        header.alignment = Alignment(horizontal="center", vertical="center")
-        header.border = header_border
-        sheet.column_dimensions[header.column_letter].width = 24
+    for command, blocks in grouped.items():
+        sheet = workbook.create_sheet(f"{command}测试结果")
+        sheet.sheet_view.showGridLines = False
+        sheet.freeze_panes = "A2"
+        for block_index, (config, rows) in enumerate(blocks):
+            column = 1 + block_index * 2
+            header = sheet.cell(row=1, column=column, value=f"{config}（配置文件名称）")
+            header.fill = PatternFill("solid", fgColor=fills[block_index % len(fills)])
+            header.font = Font(bold=True, color="1F2937")
+            header.alignment = Alignment(horizontal="center", vertical="center")
+            header.border = header_border
+            sheet.column_dimensions[header.column_letter].width = 24
 
-        for row_index, row in enumerate(rows, start=2):
-            cell = sheet.cell(row=row_index, column=column, value=row[0])
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border = data_border
-            cell.number_format = "0.###############"
+            for row_index, row in enumerate(rows, start=2):
+                cell = sheet.cell(row=row_index, column=column, value=row[0])
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = data_border
+                cell.number_format = "0.###############"
+        sheet.row_dimensions[1].height = 24
 
-    sheet.row_dimensions[1].height = 24
     workbook.save(output)
     return output
+
+
+def export_t24_excel(results: list[TestResult], output_path: str) -> Path:
+    """Backward-compatible wrapper for callers that export t24 results."""
+    return export_results_excel(results, output_path)
 
 
 class HudClient:
@@ -416,8 +456,8 @@ def main() -> int:
                 results = run_cases(client, args.case, args.switch_delay)
             else:
                 results = run_tests(client, args.config, args.test, args.switch_delay)
-        if any(result.command.split("/", 1)[0] == "t24" for result in results):
-            output = export_t24_excel(results, args.output)
+        if any(result.command.split("/", 1)[0] in {"t24", "t6"} for result in results):
+            output = export_results_excel(results, args.output)
             print(f"Excel saved: {output}", flush=True)
     except (OSError, HudProtocolError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
