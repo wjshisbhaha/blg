@@ -124,24 +124,38 @@ def export_t24_excel(results: list[TestResult], output_path: str) -> Path:
 
 
 class HudClient:
-    def __init__(self, host: str = "127.0.0.1", port: int = 5555, timeout: float = 60.0):
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 5555,
+        timeout: float = 60.0,
+        response_idle: float = 1.0,
+        debug: bool = False,
+    ):
         self.host = host
         self.port = port
         self.timeout = timeout
+        self.response_idle = response_idle
+        self.debug = debug
         self._socket: socket.socket | None = None
         self._buffer = bytearray()
+        self._peer_closed = False
 
     def connect(self) -> None:
-        if self._socket is not None:
+        if self._socket is not None and not self._peer_closed:
             return
+        if self._socket is not None:
+            self._socket.close()
         self._socket = socket.create_connection((self.host, self.port), self.timeout)
         self._socket.settimeout(self.timeout)
+        self._peer_closed = False
 
     def close(self) -> None:
         if self._socket is not None:
             self._socket.close()
             self._socket = None
         self._buffer.clear()
+        self._peer_closed = False
 
     def __enter__(self) -> "HudClient":
         self.connect()
@@ -154,29 +168,58 @@ class HudClient:
         """Send one command and receive through the first '%' terminator."""
         if self._socket is None:
             raise RuntimeError("HUD client is not connected")
+        if self._peer_closed:
+            self.connect()
 
         wire_command = command.strip()
         if not wire_command:
             raise ValueError("Command cannot be empty")
 
+        if self.debug:
+            print(f"TX {wire_command!r}", flush=True)
         self._socket.sendall(wire_command.encode("utf-8"))
-        return self._receive_message()
+        response = self._receive_message()
+        if self.debug:
+            print(f"RX {response!r}", flush=True)
+        return response
 
     def _receive_message(self) -> str:
         if self._socket is None:
             raise RuntimeError("HUD client is not connected")
 
-        while True:
-            end = self._buffer.find(TERMINATOR)
-            if end >= 0:
-                message = bytes(self._buffer[: end + 1])
-                del self._buffer[: end + 1]
-                return message.decode("utf-8", errors="replace").strip()
+        received_any = bool(self._buffer)
+        try:
+            while True:
+                end = self._buffer.find(TERMINATOR)
+                if end >= 0:
+                    message = bytes(self._buffer[: end + 1])
+                    del self._buffer[: end + 1]
+                    return message.decode("utf-8", errors="replace").strip()
 
-            chunk = self._socket.recv(4096)
-            if not chunk:
-                raise ConnectionError("HUD software closed the connection before returning '%'")
-            self._buffer.extend(chunk)
+                try:
+                    chunk = self._socket.recv(4096)
+                except socket.timeout:
+                    if received_any:
+                        message = bytes(self._buffer)
+                        self._buffer.clear()
+                        return message.decode("utf-8", errors="replace").strip()
+                    raise
+
+                if not chunk:
+                    if received_any:
+                        message = bytes(self._buffer)
+                        self._buffer.clear()
+                        self._peer_closed = True
+                        return message.decode("utf-8", errors="replace").strip()
+                    self._peer_closed = True
+                    raise ConnectionError("HUD software closed the connection before returning data")
+
+                self._buffer.extend(chunk)
+                received_any = True
+                self._socket.settimeout(self.response_idle)
+        finally:
+            if self._socket is not None and not self._peer_closed:
+                self._socket.settimeout(self.timeout)
 
     def switch_config(self, config_name: str) -> None:
         name = config_name.strip()
@@ -186,7 +229,7 @@ class HudClient:
             name = name[:-4]
 
         response = self.request(f"c-{name}%")
-        if response != "OK%":
+        if response.rstrip("%") != "OK":
             raise HudProtocolError(f"Failed to switch configuration {name!r}: {response}")
 
     def measure(self, command: str) -> str:
@@ -319,6 +362,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Print exact transmitted commands and raw received responses.",
+    )
+    parser.add_argument(
         "--config",
         action="append",
         help="Configuration filename without extension; repeat for multiple configurations.",
@@ -361,7 +409,7 @@ def main() -> int:
         )
         return 2
     try:
-        with HudClient(args.host, args.port, args.timeout) as client:
+        with HudClient(args.host, args.port, args.timeout, debug=args.debug) as client:
             if args.plan:
                 results = run_test_plan(client, load_test_plan(args.plan), args.switch_delay)
             elif args.case:
