@@ -434,8 +434,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        default="hud_t24_results.xlsx",
-        help="Excel output path for t24 results (default: hud_t24_results.xlsx).",
+        default="hud_results.xlsx",
+        help="Excel output path for t24/t6 results (default: hud_results.xlsx).",
     )
     return parser.parse_args()
 
