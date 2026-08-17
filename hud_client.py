@@ -16,6 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+TERMINATOR = b"%"
+
+
 class HudProtocolError(RuntimeError):
     """Raised when the HUD software returns an unexpected response."""
 
@@ -121,18 +124,12 @@ def export_t24_excel(results: list[TestResult], output_path: str) -> Path:
 
 
 class HudClient:
-    def __init__(
-        self,
-        host: str = "127.0.0.1",
-        port: int = 5555,
-        timeout: float = 60.0,
-        receive_idle: float = 0.2,
-    ):
+    def __init__(self, host: str = "127.0.0.1", port: int = 5555, timeout: float = 60.0):
         self.host = host
         self.port = port
         self.timeout = timeout
-        self.receive_idle = receive_idle
         self._socket: socket.socket | None = None
+        self._buffer = bytearray()
 
     def connect(self) -> None:
         if self._socket is not None:
@@ -144,6 +141,7 @@ class HudClient:
         if self._socket is not None:
             self._socket.close()
             self._socket = None
+        self._buffer.clear()
 
     def __enter__(self) -> "HudClient":
         self.connect()
@@ -153,7 +151,7 @@ class HudClient:
         self.close()
 
     def request(self, command: str) -> str:
-        """Send one command and receive until the socket becomes briefly idle."""
+        """Send one command and receive through the first '%' terminator."""
         if self._socket is None:
             raise RuntimeError("HUD client is not connected")
 
@@ -168,29 +166,17 @@ class HudClient:
         if self._socket is None:
             raise RuntimeError("HUD client is not connected")
 
-        chunks: list[bytes] = []
-        try:
-            first = self._socket.recv(4096)
-            if not first:
-                raise ConnectionError("HUD software closed the connection before returning data")
-            chunks.append(first)
+        while True:
+            end = self._buffer.find(TERMINATOR)
+            if end >= 0:
+                message = bytes(self._buffer[: end + 1])
+                del self._buffer[: end + 1]
+                return message.decode("utf-8", errors="replace").strip()
 
-            self._socket.settimeout(self.receive_idle)
-            while True:
-                try:
-                    chunk = self._socket.recv(4096)
-                except socket.timeout:
-                    break
-                if not chunk:
-                    break
-                chunks.append(chunk)
-        finally:
-            self._socket.settimeout(self.timeout)
-
-        return b"".join(chunks).decode("utf-8", errors="replace").strip()
-
-    def camera_ready(self) -> bool:
-        return self.request("gin") == "OK%"
+            chunk = self._socket.recv(4096)
+            if not chunk:
+                raise ConnectionError("HUD software closed the connection before returning '%'")
+            self._buffer.extend(chunk)
 
     def switch_config(self, config_name: str) -> None:
         name = config_name.strip()
@@ -333,12 +319,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=5555)
     parser.add_argument("--timeout", type=float, default=60.0)
     parser.add_argument(
-        "--receive-idle",
-        type=float,
-        default=0.2,
-        help="Seconds without new data that marks a response complete (default: 0.2).",
-    )
-    parser.add_argument(
         "--config",
         action="append",
         help="Configuration filename without extension; repeat for multiple configurations.",
@@ -381,7 +361,7 @@ def main() -> int:
         )
         return 2
     try:
-        with HudClient(args.host, args.port, args.timeout, args.receive_idle) as client:
+        with HudClient(args.host, args.port, args.timeout) as client:
             if args.plan:
                 results = run_test_plan(client, load_test_plan(args.plan), args.switch_delay)
             elif args.case:
