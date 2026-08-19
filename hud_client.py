@@ -7,7 +7,6 @@ Switch one or more configuration files and execute measurement commands.
 from __future__ import annotations
 
 import argparse
-import array
 import ast
 import re
 import shutil
@@ -18,11 +17,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from brightness_io import (
+    BRIGHTNESS_HEIGHT,
+    BRIGHTNESS_WIDTH,
+    FLOAT32_BYTES,
+    convert_brightness_bin_to_txt,
+)
+
 
 TERMINATOR = b"%"
-BRIGHTNESS_WIDTH = 4784
-BRIGHTNESS_HEIGHT = 3190
-FLOAT32_BYTES = 4
 
 
 class HudProtocolError(RuntimeError):
@@ -35,13 +38,13 @@ class TestResult:
     command: str
     response: str
     image_path: str | None = None
+    display_name: str | None = None
 
 
 @dataclass(frozen=True)
 class PlanOptions:
     sparkle_source_dir: str | None = None
     sparkle_save_dir: str | None = None
-    brightness_file: str | None = None
 
 
 def parse_t24_rows(response: str) -> list[list[float]]:
@@ -121,11 +124,12 @@ def export_results_excel(results: list[TestResult], output_path: str) -> Path:
         if command not in grouped:
             grouped[command] = []
             indexes[command] = {}
-        if result.config not in indexes[command]:
+        label = result.display_name or result.config
+        if label not in indexes[command]:
             rows: list[list[float]] = []
-            indexes[command][result.config] = rows
-            grouped[command].append((result.config, rows))
-        indexes[command][result.config].extend(parser(result.response))
+            indexes[command][label] = rows
+            grouped[command].append((label, rows))
+        indexes[command][label].extend(parser(result.response))
 
     if not grouped:
         raise HudProtocolError("No t24 or t6 results were available for Excel export")
@@ -165,7 +169,7 @@ def export_results_excel(results: list[TestResult], output_path: str) -> Path:
                 header = sheet.cell(
                     row=start_row,
                     column=column,
-                    value=f"{config}（配置文件名称）",
+                    value=config,
                 )
                 header.fill = PatternFill("solid", fgColor=fills[block_index % len(fills)])
                 header.font = Font(bold=True, color="1F2937")
@@ -185,7 +189,7 @@ def export_results_excel(results: list[TestResult], output_path: str) -> Path:
     if image_results:
         image_sheet = workbook.create_sheet("图片", 1)
         image_sheet.sheet_view.showGridLines = False
-        image_sheet["A1"] = "配置文件名"
+        image_sheet["A1"] = "区域名称"
         image_sheet["B1"] = "图片"
         for cell in image_sheet[1]:
             cell.fill = PatternFill("solid", fgColor="DDEBF7")
@@ -197,7 +201,11 @@ def export_results_excel(results: list[TestResult], output_path: str) -> Path:
         image_sheet.freeze_panes = "A2"
 
         for row_index, result in enumerate(image_results, start=2):
-            config_cell = image_sheet.cell(row=row_index, column=1, value=result.config)
+            config_cell = image_sheet.cell(
+                row=row_index,
+                column=1,
+                value=result.display_name or result.config,
+            )
             config_cell.alignment = Alignment(horizontal="center", vertical="center")
             config_cell.border = data_border
             image_cell = image_sheet.cell(row=row_index, column=2)
@@ -431,7 +439,7 @@ def load_plan_options(path: str) -> PlanOptions:
         raise ValueError(f"Cannot read test plan {config_path}: {exc}") from exc
 
     values: dict[str, str | None] = {}
-    wanted = {"SPARKLE_SOURCE_DIR", "SPARKLE_SAVE_DIR", "BRIGHTNESS_FILE"}
+    wanted = {"SPARKLE_SOURCE_DIR", "SPARKLE_SAVE_DIR"}
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
@@ -450,9 +458,7 @@ def load_plan_options(path: str) -> PlanOptions:
 
     source = values.get("SPARKLE_SOURCE_DIR")
     destination = values.get("SPARKLE_SAVE_DIR")
-    if bool(source) != bool(destination):
-        raise ValueError("SPARKLE_SOURCE_DIR and SPARKLE_SAVE_DIR must be configured together")
-    return PlanOptions(source, destination, values.get("BRIGHTNESS_FILE"))
+    return PlanOptions(source, destination)
 
 
 def save_sparkle_image(
@@ -460,6 +466,7 @@ def save_sparkle_image(
     source_dir: str,
     save_dir: str,
     sequence: int,
+    filename: str | None = None,
 ) -> Path:
     """Copy Sparkle.jpg to a unique per-measurement destination filename."""
     source = Path(source_dir).expanduser() / "Sparkle.jpg"
@@ -467,9 +474,12 @@ def save_sparkle_image(
         raise HudProtocolError(f"Sparkle image was not found: {source}")
     destination_dir = Path(save_dir).expanduser()
     destination_dir.mkdir(parents=True, exist_ok=True)
-    safe_config = re.sub(r"[^0-9A-Za-z._-]+", "_", config).strip("_") or "config"
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    destination = destination_dir / f"Sparkle_{safe_config}_{sequence:03d}_{timestamp}.jpg"
+    if filename:
+        destination = destination_dir / filename
+    else:
+        safe_config = re.sub(r"[^0-9A-Za-z._-]+", "_", config).strip("_") or "config"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        destination = destination_dir / f"Sparkle_{safe_config}_{sequence:03d}_{timestamp}.jpg"
     shutil.copy2(source, destination)
     return destination.resolve()
 
@@ -502,51 +512,21 @@ def wait_for_brightness_file(
     )
 
 
-def convert_brightness_bin_to_txt(
-    bin_path: str | Path,
-    txt_path: str | Path | None = None,
-    width: int = BRIGHTNESS_WIDTH,
-    height: int = BRIGHTNESS_HEIGHT,
-) -> Path:
-    """Convert little-endian float32 data to a height-by-width text matrix."""
-    source = Path(bin_path).expanduser()
-    destination = Path(txt_path).expanduser() if txt_path else source.with_suffix(".txt")
-    expected_size = width * height * FLOAT32_BYTES
-    actual_size = source.stat().st_size
-    if actual_size != expected_size:
-        raise HudProtocolError(
-            f"Brightness file size is invalid: {source}; expected {expected_size} bytes, "
-            f"actual {actual_size}"
-        )
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    row_bytes = width * FLOAT32_BYTES
-    with source.open("rb") as binary, destination.open("w", encoding="utf-8", newline="\n") as text:
-        for row_index in range(height):
-            raw = binary.read(row_bytes)
-            if len(raw) != row_bytes:
-                raise HudProtocolError(
-                    f"Brightness file ended early at row {row_index + 1}: {source}"
-                )
-            values = array.array("f")
-            values.frombytes(raw)
-            if sys.byteorder != "little":
-                values.byteswap()
-            text.write(" ".join(format(value, ".9g") for value in values))
-            text.write("\n")
-    return destination.resolve()
-
-
 def run_test_plan(
     client: HudClient,
     plan: list[tuple[str, list[str]]],
     switch_delay: float,
     sparkle_source_dir: str | None = None,
     sparkle_save_dir: str | None = None,
+    run_dir: str | None = None,
 ) -> list[TestResult]:
     results: list[TestResult] = []
     sparkle_sequence = 0
-    for config, commands in plan:
+    batch_dir = Path(run_dir).expanduser().resolve() if run_dir else None
+    if batch_dir:
+        batch_dir.mkdir(parents=True, exist_ok=True)
+    for config_index, (config, commands) in enumerate(plan, start=1):
+        region_name = f"区域{config_index}"
         print(f"[{config}] switching configuration...", flush=True)
         client.switch_config(config)
         if switch_delay:
@@ -554,9 +534,14 @@ def run_test_plan(
         for command in commands:
             print(f"[{config}] running {command}...", flush=True)
             if command.startswith("ssf-"):
-                brightness_path = command[4:].strip()
-                if not brightness_path:
+                configured_path = command[4:].strip()
+                if not configured_path:
                     raise HudProtocolError("ssf command is missing the brightness file path")
+                brightness_path = (
+                    str(batch_dir / f"{region_name}.bin")
+                    if batch_dir
+                    else configured_path
+                )
                 brightness_file = Path(brightness_path).expanduser()
                 previous_mtime_ns = (
                     brightness_file.stat().st_mtime_ns if brightness_file.exists() else None
@@ -567,23 +552,27 @@ def run_test_plan(
                     previous_mtime_ns,
                     timeout=client.timeout,
                 )
-                txt_file = convert_brightness_bin_to_txt(ready_file)
-                print(f"[{config}] brightness txt saved: {txt_file}", flush=True)
+                print(f"[{config}] brightness bin ready: {ready_file}", flush=True)
+                if batch_dir:
+                    txt_file = convert_brightness_bin_to_txt(ready_file)
+                    print(f"[{config}] brightness txt saved: {txt_file}", flush=True)
                 continue
             response = client.measure(command)
             image_path = None
-            if command.split("/", 1)[0] == "t24" and sparkle_source_dir and sparkle_save_dir:
+            image_destination = str(batch_dir) if batch_dir else sparkle_save_dir
+            if command.split("/", 1)[0] == "t24" and sparkle_source_dir and image_destination:
                 sparkle_sequence += 1
                 image_path = str(
                     save_sparkle_image(
                         config,
                         sparkle_source_dir,
-                        sparkle_save_dir,
+                        image_destination,
                         sparkle_sequence,
+                        f"{region_name}.jpg" if batch_dir else None,
                     )
                 )
                 print(f"[{config}] image saved: {image_path}", flush=True)
-            results.append(TestResult(config, command, response, image_path))
+            results.append(TestResult(config, command, response, image_path, region_name))
             print(f"[{config}] {response}", flush=True)
     return results
 
@@ -658,9 +647,6 @@ def main() -> int:
         with HudClient(args.host, args.port, args.timeout, debug=args.debug) as client:
             if args.plan:
                 options = load_plan_options(args.plan)
-                if options.brightness_file:
-                    print(f"Setting brightness file: {options.brightness_file}", flush=True)
-                    client.set_brightness_file(options.brightness_file)
                 results = run_test_plan(
                     client,
                     load_test_plan(args.plan),

@@ -12,10 +12,6 @@ SPARKLE_SOURCE_DIR = None
 # 例如：r"D:\HUD测试结果\图片"
 SPARKLE_SAVE_DIR = None
 
-# 可选亮度文件；配置后程序会在测试前发送：ssf-完整路径
-# 例如：r"D:\test\test.bin"
-BRIGHTNESS_FILE = None
-
 TEST_PLAN = [
     ("11", ["t24", r"ssf-D:\test\test.bin", "t6"]),
     ("22", ["t24", "t6"]),
