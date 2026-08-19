@@ -7,6 +7,7 @@ Switch one or more configuration files and execute measurement commands.
 from __future__ import annotations
 
 import argparse
+import array
 import ast
 import re
 import shutil
@@ -19,6 +20,9 @@ from pathlib import Path
 
 
 TERMINATOR = b"%"
+BRIGHTNESS_WIDTH = 4784
+BRIGHTNESS_HEIGHT = 3190
+FLOAT32_BYTES = 4
 
 
 class HudProtocolError(RuntimeError):
@@ -470,6 +474,69 @@ def save_sparkle_image(
     return destination.resolve()
 
 
+def wait_for_brightness_file(
+    file_path: str,
+    previous_mtime_ns: int | None,
+    timeout: float = 30.0,
+    width: int = BRIGHTNESS_WIDTH,
+    height: int = BRIGHTNESS_HEIGHT,
+) -> Path:
+    """Wait until a newly written float32 brightness file reaches its expected size."""
+    path = Path(file_path).expanduser()
+    expected_size = width * height * FLOAT32_BYTES
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            time.sleep(0.2)
+            continue
+        is_new = previous_mtime_ns is None or stat.st_mtime_ns != previous_mtime_ns
+        if is_new and stat.st_size == expected_size:
+            return path.resolve()
+        time.sleep(0.2)
+    actual_size = path.stat().st_size if path.exists() else None
+    raise HudProtocolError(
+        f"Brightness file was not ready: {path}; expected {expected_size} bytes, "
+        f"actual {actual_size if actual_size is not None else 'missing'}"
+    )
+
+
+def convert_brightness_bin_to_txt(
+    bin_path: str | Path,
+    txt_path: str | Path | None = None,
+    width: int = BRIGHTNESS_WIDTH,
+    height: int = BRIGHTNESS_HEIGHT,
+) -> Path:
+    """Convert little-endian float32 data to a height-by-width text matrix."""
+    source = Path(bin_path).expanduser()
+    destination = Path(txt_path).expanduser() if txt_path else source.with_suffix(".txt")
+    expected_size = width * height * FLOAT32_BYTES
+    actual_size = source.stat().st_size
+    if actual_size != expected_size:
+        raise HudProtocolError(
+            f"Brightness file size is invalid: {source}; expected {expected_size} bytes, "
+            f"actual {actual_size}"
+        )
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    row_bytes = width * FLOAT32_BYTES
+    with source.open("rb") as binary, destination.open("w", encoding="utf-8", newline="\n") as text:
+        for row_index in range(height):
+            raw = binary.read(row_bytes)
+            if len(raw) != row_bytes:
+                raise HudProtocolError(
+                    f"Brightness file ended early at row {row_index + 1}: {source}"
+                )
+            values = array.array("f")
+            values.frombytes(raw)
+            if sys.byteorder != "little":
+                values.byteswap()
+            text.write(" ".join(format(value, ".9g") for value in values))
+            text.write("\n")
+    return destination.resolve()
+
+
 def run_test_plan(
     client: HudClient,
     plan: list[tuple[str, list[str]]],
@@ -486,6 +553,23 @@ def run_test_plan(
             time.sleep(switch_delay)
         for command in commands:
             print(f"[{config}] running {command}...", flush=True)
+            if command.startswith("ssf-"):
+                brightness_path = command[4:].strip()
+                if not brightness_path:
+                    raise HudProtocolError("ssf command is missing the brightness file path")
+                brightness_file = Path(brightness_path).expanduser()
+                previous_mtime_ns = (
+                    brightness_file.stat().st_mtime_ns if brightness_file.exists() else None
+                )
+                client.set_brightness_file(brightness_path)
+                ready_file = wait_for_brightness_file(
+                    brightness_path,
+                    previous_mtime_ns,
+                    timeout=client.timeout,
+                )
+                txt_file = convert_brightness_bin_to_txt(ready_file)
+                print(f"[{config}] brightness txt saved: {txt_file}", flush=True)
+                continue
             response = client.measure(command)
             image_path = None
             if command.split("/", 1)[0] == "t24" and sparkle_source_dir and sparkle_save_dir:

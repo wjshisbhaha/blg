@@ -17,7 +17,7 @@ SPARKLE_SAVE_DIR = None
 BRIGHTNESS_FILE = None
 
 TEST_PLAN = [
-    ("11", ["t24", "t6"]),
+    ("11", ["t24", r"ssf-D:\test\test.bin", "t6"]),
     ("22", ["t24", "t6"]),
     ("33", ["t24", "t6"]),
     ("44", ["t24", "t6"]),
