@@ -9,10 +9,12 @@ from __future__ import annotations
 import argparse
 import ast
 import re
+import shutil
 import socket
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 
@@ -28,6 +30,14 @@ class TestResult:
     config: str
     command: str
     response: str
+    image_path: str | None = None
+
+
+@dataclass(frozen=True)
+class PlanOptions:
+    sparkle_source_dir: str | None = None
+    sparkle_save_dir: str | None = None
+    brightness_file: str | None = None
 
 
 def parse_t24_rows(response: str) -> list[list[float]]:
@@ -88,6 +98,7 @@ def export_results_excel(results: list[TestResult], output_path: str) -> Path:
     """Export t24/t6 column-2 values into separate measurement sheets."""
     try:
         from openpyxl import Workbook
+        from openpyxl.drawing.image import Image as ExcelImage
         from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         from openpyxl.utils import get_column_letter
     except ImportError as exc:
@@ -165,6 +176,33 @@ def export_results_excel(results: list[TestResult], output_path: str) -> Path:
                     cell.border = data_border
                     cell.number_format = "0.###############"
             start_row += max_values + 2
+
+    image_results = [result for result in results if result.image_path]
+    if image_results:
+        image_sheet = workbook.create_sheet("图片", 1)
+        image_sheet.sheet_view.showGridLines = False
+        image_sheet["A1"] = "配置文件名"
+        image_sheet["B1"] = "图片"
+        for cell in image_sheet[1]:
+            cell.fill = PatternFill("solid", fgColor="DDEBF7")
+            cell.font = Font(bold=True, color="1F2937")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = header_border
+        image_sheet.column_dimensions["A"].width = 24
+        image_sheet.column_dimensions["B"].width = 42
+        image_sheet.freeze_panes = "A2"
+
+        for row_index, result in enumerate(image_results, start=2):
+            config_cell = image_sheet.cell(row=row_index, column=1, value=result.config)
+            config_cell.alignment = Alignment(horizontal="center", vertical="center")
+            config_cell.border = data_border
+            image_cell = image_sheet.cell(row=row_index, column=2)
+            image_cell.border = data_border
+            image = ExcelImage(result.image_path)
+            image.width = 240
+            image.height = 135
+            image_sheet.add_image(image, f"B{row_index}")
+            image_sheet.row_dimensions[row_index].height = 105
 
     workbook.save(output)
     return output
@@ -284,6 +322,11 @@ class HudClient:
         if response.rstrip("%") != "OK":
             raise HudProtocolError(f"Failed to switch configuration {name!r}: {response}")
 
+    def set_brightness_file(self, file_path: str) -> None:
+        response = self.request(f"ssf-{file_path}")
+        if response.rstrip("%") != "OK":
+            raise HudProtocolError(f"Failed to set brightness file {file_path!r}: {response}")
+
     def measure(self, command: str) -> str:
         response = self.request(command)
         expected_prefix = command.split("/", 1)[0] + "_Result"
@@ -375,12 +418,67 @@ def load_test_plan(path: str) -> list[tuple[str, list[str]]]:
     return plan
 
 
+def load_plan_options(path: str) -> PlanOptions:
+    """Load optional image directories and brightness file from a plan file."""
+    config_path = Path(path)
+    try:
+        tree = ast.parse(config_path.read_text(encoding="utf-8"), filename=str(config_path))
+    except (OSError, SyntaxError) as exc:
+        raise ValueError(f"Cannot read test plan {config_path}: {exc}") from exc
+
+    values: dict[str, str | None] = {}
+    wanted = {"SPARKLE_SOURCE_DIR", "SPARKLE_SAVE_DIR", "BRIGHTNESS_FILE"}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+        matching = wanted.intersection(names)
+        if not matching:
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (ValueError, TypeError, SyntaxError) as exc:
+            raise ValueError(f"{next(iter(matching))} must be a string or None") from exc
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"{next(iter(matching))} must be a string or None")
+        for name in matching:
+            values[name] = value.strip() if isinstance(value, str) and value.strip() else None
+
+    source = values.get("SPARKLE_SOURCE_DIR")
+    destination = values.get("SPARKLE_SAVE_DIR")
+    if bool(source) != bool(destination):
+        raise ValueError("SPARKLE_SOURCE_DIR and SPARKLE_SAVE_DIR must be configured together")
+    return PlanOptions(source, destination, values.get("BRIGHTNESS_FILE"))
+
+
+def save_sparkle_image(
+    config: str,
+    source_dir: str,
+    save_dir: str,
+    sequence: int,
+) -> Path:
+    """Copy Sparkle.jpg to a unique per-measurement destination filename."""
+    source = Path(source_dir).expanduser() / "Sparkle.jpg"
+    if not source.is_file():
+        raise HudProtocolError(f"Sparkle image was not found: {source}")
+    destination_dir = Path(save_dir).expanduser()
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    safe_config = re.sub(r"[^0-9A-Za-z._-]+", "_", config).strip("_") or "config"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    destination = destination_dir / f"Sparkle_{safe_config}_{sequence:03d}_{timestamp}.jpg"
+    shutil.copy2(source, destination)
+    return destination.resolve()
+
+
 def run_test_plan(
     client: HudClient,
     plan: list[tuple[str, list[str]]],
     switch_delay: float,
+    sparkle_source_dir: str | None = None,
+    sparkle_save_dir: str | None = None,
 ) -> list[TestResult]:
     results: list[TestResult] = []
+    sparkle_sequence = 0
     for config, commands in plan:
         print(f"[{config}] switching configuration...", flush=True)
         client.switch_config(config)
@@ -389,7 +487,19 @@ def run_test_plan(
         for command in commands:
             print(f"[{config}] running {command}...", flush=True)
             response = client.measure(command)
-            results.append(TestResult(config, command, response))
+            image_path = None
+            if command.split("/", 1)[0] == "t24" and sparkle_source_dir and sparkle_save_dir:
+                sparkle_sequence += 1
+                image_path = str(
+                    save_sparkle_image(
+                        config,
+                        sparkle_source_dir,
+                        sparkle_save_dir,
+                        sparkle_sequence,
+                    )
+                )
+                print(f"[{config}] image saved: {image_path}", flush=True)
+            results.append(TestResult(config, command, response, image_path))
             print(f"[{config}] {response}", flush=True)
     return results
 
@@ -463,7 +573,17 @@ def main() -> int:
     try:
         with HudClient(args.host, args.port, args.timeout, debug=args.debug) as client:
             if args.plan:
-                results = run_test_plan(client, load_test_plan(args.plan), args.switch_delay)
+                options = load_plan_options(args.plan)
+                if options.brightness_file:
+                    print(f"Setting brightness file: {options.brightness_file}", flush=True)
+                    client.set_brightness_file(options.brightness_file)
+                results = run_test_plan(
+                    client,
+                    load_test_plan(args.plan),
+                    args.switch_delay,
+                    options.sparkle_source_dir,
+                    options.sparkle_save_dir,
+                )
             elif args.case:
                 results = run_cases(client, args.case, args.switch_delay)
             else:
