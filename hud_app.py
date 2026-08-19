@@ -32,7 +32,6 @@ from brightness_analyzer import MainWindow as BrightnessAnalyzerWindow
 from hud_client import (
     HudClient,
     export_results_excel,
-    load_plan_options,
     load_test_plan,
     run_test_plan,
 )
@@ -200,6 +199,7 @@ class AutoTestWorker(QObject):
         host: str,
         port: int,
         plan_path: str,
+        sparkle_source_dir: str,
         save_root: str,
         folder_name: str,
         excel_name: str,
@@ -208,6 +208,7 @@ class AutoTestWorker(QObject):
         self.host = host
         self.port = port
         self.plan_path = plan_path
+        self.sparkle_source_dir = sparkle_source_dir
         self.save_root = save_root
         self.folder_name = folder_name
         self.excel_name = excel_name
@@ -218,7 +219,6 @@ class AutoTestWorker(QObject):
         try:
             with contextlib.redirect_stdout(writer), contextlib.redirect_stderr(writer):
                 plan = load_test_plan(self.plan_path)
-                options = load_plan_options(self.plan_path)
                 run_dir = (Path(self.save_root).expanduser() / self.folder_name).resolve()
                 if run_dir.exists() and any(run_dir.iterdir()):
                     raise ValueError(f"测试文件夹已存在且不为空：{run_dir}")
@@ -229,8 +229,7 @@ class AutoTestWorker(QObject):
                         client,
                         plan,
                         switch_delay=0.2,
-                        sparkle_source_dir=options.sparkle_source_dir,
-                        sparkle_save_dir=options.sparkle_save_dir,
+                        sparkle_source_dir=self.sparkle_source_dir,
                         run_dir=str(run_dir),
                     )
                 if any(result.command.split("/", 1)[0] in {"t24", "t6"} for result in results):
@@ -284,12 +283,18 @@ class AutoTestPage(QWidget):
 
         project_dir = Path(__file__).resolve().parent
         self.plan_edit = QLineEdit(str(project_dir / "hud_test_config.py"))
+        self.sparkle_source_edit = QLineEdit()
+        self.sparkle_source_edit.setPlaceholderText("请选择HUD软件生成 Sparkle.jpg 的目录")
         self.save_root_edit = QLineEdit(str(project_dir / "测试结果"))
         self.folder_name_edit = QLineEdit("本次测试")
         self.excel_name_edit = QLineEdit("测试结果.xlsx")
         form.addRow("服务器IP", self.host_edit)
         form.addRow("端口", self.port_spin)
         form.addRow("测试配置", self._path_row(self.plan_edit, self._choose_plan))
+        form.addRow(
+            "Sparkle默认目录",
+            self._path_row(self.sparkle_source_edit, self._choose_sparkle_source),
+        )
         form.addRow("保存根目录", self._path_row(self.save_root_edit, self._choose_save_root))
         form.addRow("测试文件夹名称", self.folder_name_edit)
         form.addRow("Excel文件名称", self.excel_name_edit)
@@ -388,14 +393,23 @@ class AutoTestPage(QWidget):
         if path:
             self.save_root_edit.setText(path)
 
+    def _choose_sparkle_source(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "选择Sparkle.jpg默认生成目录")
+        if path:
+            self.sparkle_source_edit.setText(path)
+
     @pyqtSlot()
     def start_test(self) -> None:
         plan_path = self.plan_edit.text().strip()
+        sparkle_source = self.sparkle_source_edit.text().strip()
         save_root = self.save_root_edit.text().strip()
         folder_name = self.folder_name_edit.text().strip()
         excel_name = self.excel_name_edit.text().strip()
         if not Path(plan_path).is_file():
             QMessageBox.warning(self, "配置错误", "测试配置文件不存在")
+            return
+        if not sparkle_source or not Path(sparkle_source).is_dir():
+            QMessageBox.warning(self, "配置错误", "请选择有效的Sparkle.jpg默认生成目录")
             return
         if not self._save_plan_content(show_message=False):
             return
@@ -418,6 +432,7 @@ class AutoTestPage(QWidget):
             self.host_edit.text().strip(),
             self.port_spin.value(),
             plan_path,
+            sparkle_source,
             save_root,
             folder_name,
             excel_name,
